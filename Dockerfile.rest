@@ -1,11 +1,12 @@
 # Dockerfile for building the REST service
-FROM rust:1.75-slim as builder
+FROM rustlang/rust:nightly-slim as builder
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
