@@ -210,9 +210,28 @@ pub(crate) async fn metrics_handler() -> impl Responder {
     }
 }
 
-/// Configure the metrics route
+/// Configure the metrics route with our custom handler
+///
+/// This overrides the auto-generated route from OpenAPI
 pub(crate) fn configure(cfg: &mut actix_web::web::ServiceConfig) {
     cfg.route("/metrics", actix_web::web::get().to(metrics_handler));
+}
+
+/// Implementation of the OpenAPI-generated Metrics trait for RestApi
+///
+/// Note: The OpenAPI code generator doesn't properly handle text/plain responses,
+/// so it returns Result<(), RestError> instead of Result<String, RestError>.
+/// This trait method is registered by the auto-generated handler first, but then
+/// we override it in the configure() function above with metrics_handler().
+#[async_trait::async_trait]
+impl apis::actix_server::Metrics for super::RestApi {
+    async fn get_metrics() -> Result<(), RestError<RestJsonError>> {
+        // This stub implementation satisfies the compiler requirement that RestApi
+        // implements the Metrics trait. The actual endpoint is handled by the
+        // metrics_handler() function registered in configure() above, which
+        // overrides this auto-generated handler.
+        Ok(())
+    }
 }
 
 #[cfg(test)]

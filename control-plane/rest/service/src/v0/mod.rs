@@ -77,7 +77,9 @@ fn configure(cfg: &mut actix_web::web::ServiceConfig) {
     apis::actix_server::configure::<RestApi, BearerToken>(cfg);
     // todo: remove when the /states is added to the spec
     states::configure(cfg);
-    // Prometheus metrics endpoint
+    // Override the auto-generated metrics endpoint with our custom implementation
+    // The OpenAPI-generated handler doesn't properly support text/plain responses,
+    // so we register our custom handler after the auto-generated one to override it.
     metrics::configure(cfg);
 }
 
