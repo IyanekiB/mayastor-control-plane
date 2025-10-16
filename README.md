@@ -5,9 +5,42 @@
 [![Community Meetings](https://img.shields.io/badge/Community-Meetings-blue)](https://github.com/openebs/community/blob/HEAD/README.md#community)
 [![built with nix](https://builtwithnix.org/badge.svg)](https://builtwithnix.org)
 
+## Getting Started
+
+### Environment Setup
+
+To set up your development environment (Nix shell, Docker, dependencies), please refer to the comprehensive setup guide:
+
+**[Environment Setup Guide](ENVIRONMENT_SETUP.md)**
+
+This guide covers:
+- Nix environment configuration
+- Rustup installation
+- Git submodule setup
+- Docker installation and configuration
+- Common troubleshooting steps
+
+### Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/openebs/mayastor-control-plane.git
+cd mayastor-control-plane
+
+# Initialize submodules
+git submodule update --init --recursive
+
+# Enter nix-shell
+./enter-nix-shell.sh
+
+# Build the project
+cargo build
+```
+
 ## Links
 
 - [Mayastor](https://github.com/openebs/Mayastor)
+- [Environment Setup Guide](ENVIRONMENT_SETUP.md)
 
 ## License
 
