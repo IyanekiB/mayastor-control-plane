@@ -1,0 +1,93 @@
+name: Fork Quick Integration Test
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches:
+      - feature/**
+    paths:
+      - 'control-plane/rest/**'
+      - '.github/workflows/fork-quick-integration.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  quick-integration:
+    name: Quick Integration Test (without io-engine)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix path
+        run: |
+          export NIX_PATH=nixpkgs=$(jq '.nixpkgs.url' nix/sources.json -r)
+          echo "NIX_PATH=$NIX_PATH" >> $GITHUB_ENV
+
+      - name: Pre-populate nix-shell
+        run: nix-shell --run "echo 'Nix shell ready'" shell.nix
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build binaries
+        run: nix-shell --run "cargo build --bins"
+
+      - name: Setup Docker for deployer
+        run: |
+          sudo usermod -aG docker $USER
+
+      - name: Start minimal cluster with deployer
+        run: |
+          sg docker -c "nix-shell --run 'cargo run --bin deployer -- start --no-io-engines --show-info'"
+        timeout-minutes: 5
+        continue-on-error: true
+
+      - name: Check cluster status
+        run: |
+          sg docker -c "nix-shell --run 'cargo run --bin deployer -- list'" || true
+          docker ps -a
+
+      - name: Test metrics endpoint manually
+        run: |
+          # Wait for services to be ready
+          sleep 10
+          # Try to curl the metrics endpoint
+          curl -v http://localhost:8081/v0/metrics || true
+          curl -k https://localhost:8080/v0/nodes || true
+        continue-on-error: true
+
+      - name: Run unit tests
+        run: |
+          nix-shell --run "cargo test -p rest --bin rest --verbose"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          sg docker -c "nix-shell --run 'cargo run --bin deployer -- stop'" || true
+          docker ps -a
+          docker system df
+
+      - name: Summary
+        run: |
+          echo "✅ Unit tests completed"
+          echo "ℹ️  Deployer cluster test attempted (may fail without io-engine)"
+          echo "ℹ️  Integration tests will work fully in upstream CI"

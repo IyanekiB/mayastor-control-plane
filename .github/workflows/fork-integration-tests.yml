@@ -1,0 +1,210 @@
+name: Fork Integration Tests (Manual)
+on:
+  workflow_dispatch:  # Manual trigger only
+    inputs:
+      build_io_engine:
+        description: 'Build io-engine from source (takes 60+ min)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      run_integration_tests:
+        description: 'Run integration tests (requires io-engine images)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CI: 1
+
+jobs:
+  build-io-engine:
+    name: Build io-engine Images
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.build_io_engine == 'true' }}
+
+    steps:
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          echo "After cleanup:"
+          df -h
+
+      - name: Checkout mayastor for io-engine
+        uses: actions/checkout@v4
+        with:
+          repository: openebs/mayastor
+          ref: develop
+          path: mayastor
+          submodules: 'recursive'
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build io-engine image
+        run: |
+          cd mayastor
+          nix-shell --run "make images"
+        timeout-minutes: 90
+
+      - name: Tag and save io-engine image
+        run: |
+          docker images
+          # Tag the image for your fork
+          docker tag mayastor-io-engine:latest ${{ github.repository_owner }}/mayastor-io-engine:latest
+          # Save image to tar
+          docker save ${{ github.repository_owner }}/mayastor-io-engine:latest | gzip > io-engine.tar.gz
+          ls -lh io-engine.tar.gz
+
+      - name: Upload io-engine image
+        uses: actions/upload-artifact@v4
+        with:
+          name: io-engine-image
+          path: io-engine.tar.gz
+          retention-days: 1
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-io-engine]
+    if: |
+      always() &&
+      (needs.build-io-engine.result == 'success' || needs.build-io-engine.result == 'skipped') &&
+      github.event.inputs.run_integration_tests == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo docker image prune --all --force
+          echo "After cleanup:"
+          df -h
+
+      - name: Download io-engine image
+        if: ${{ github.event.inputs.build_io_engine == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: io-engine-image
+
+      - name: Load io-engine image
+        if: ${{ github.event.inputs.build_io_engine == 'true' }}
+        run: |
+          docker load < io-engine.tar.gz
+          docker images
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix path
+        run: |
+          export NIX_PATH=nixpkgs=$(jq '.nixpkgs.url' nix/sources.json -r)
+          echo "NIX_PATH=$NIX_PATH" >> $GITHUB_ENV
+
+      - name: Pre-populate nix-shell
+        run: nix-shell --run "echo 'Nix shell ready'" shell.nix
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build rust binaries
+        run: nix-shell --run "cargo build --bins"
+
+      - name: Setup Test Pre-Requisites
+        run: |
+          # Configure hugepages (reduced for GitHub runners)
+          sudo sysctl -w vm.nr_hugepages=512
+          # Install kernel modules
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r) || true
+          sudo modprobe nvme_tcp || echo "Warning: nvme_tcp module not available"
+          # Check nvme configuration
+          sudo ./utils/dependencies/scripts/nvme-conf.sh --check --apply --overwrite || echo "Warning: nvme config failed"
+
+      - name: Run Integration Tests
+        run: |
+          # Set docker group permissions
+          sudo usermod -aG docker $USER
+          # Run tests with deployer
+          sg docker -c "nix-shell --run 'cargo test -p rest --test v0_test --verbose'"
+        timeout-minutes: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          nix-shell --run "./scripts/rust/deployer-cleanup.sh" || true
+          docker ps -a
+          docker images
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs
+          path: |
+            target/
+            *.log
+
+  unit-tests-only:
+    name: Unit Tests Only (Fast)
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_integration_tests == 'false' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix path
+        run: |
+          export NIX_PATH=nixpkgs=$(jq '.nixpkgs.url' nix/sources.json -r)
+          echo "NIX_PATH=$NIX_PATH" >> $GITHUB_ENV
+
+      - name: Pre-populate nix-shell
+        run: nix-shell --run "echo 'Nix shell ready'" shell.nix
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Unit Tests
+        run: |
+          nix-shell --run "cargo test -p rest --bin rest --verbose"
+
+      - name: Summary
+        run: |
+          echo "✅ Unit tests completed"
+          echo "ℹ️  To run integration tests, set 'run_integration_tests' to 'true'"
+          echo "ℹ️  To build io-engine first, set 'build_io_engine' to 'true'"
