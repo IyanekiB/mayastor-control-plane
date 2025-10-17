@@ -1,0 +1,78 @@
+name: Fork CI - Unit Tests
+on:
+  push:
+    branches:
+      - feature/**
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages to free up space
+          sudo apt-get remove -y '^dotnet-.*' || true
+          sudo apt-get remove -y '^llvm-.*' || true
+          sudo apt-get remove -y 'php.*' || true
+          sudo apt-get remove -y azure-cli google-cloud-sdk || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix path
+        run: |
+          export NIX_PATH=nixpkgs=$(jq '.nixpkgs.url' nix/sources.json -r)
+          echo "NIX_PATH=$NIX_PATH" >> $GITHUB_ENV
+
+      - name: Pre-populate nix-shell
+        run: nix-shell --run "echo 'Nix shell ready'" shell.nix
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build REST binary
+        run: nix-shell --run "cargo build -p rest --bin rest"
+
+      - name: Run Unit Tests
+        run: |
+          nix-shell --run "cargo test -p rest --bin rest --verbose"
+
+      - name: Run Clippy
+        run: |
+          nix-shell --run "cargo clippy -p rest --bin rest -- -D warnings"
+
+      - name: Check formatting
+        run: |
+          nix-shell --run "cargo fmt -p rest -- --check"
+
+  summary:
+    name: CI Summary
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: All tests passed
+        run: |
+          echo "✅ Unit tests passed"
+          echo "✅ Clippy checks passed"
+          echo "✅ Formatting checks passed"
+          echo ""
+          echo "Ready to submit PR!"
