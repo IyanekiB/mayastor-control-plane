@@ -124,7 +124,7 @@ impl NodeMetricsCollector {
         let nodes = client()
             .get(Filter::None, false, None)
             .await
-            .map_err(|e| format!("Failed to fetch nodes: {}", e))?
+            .map_err(|e| format!("Failed to fetch nodes: {e}"))?
             .into_inner();
 
         // Update metrics for each node
@@ -176,11 +176,9 @@ impl Collector for NodeMetricsCollector {
 /// Initialize the metrics collector and register it with the Prometheus registry
 pub(crate) fn init_metrics() {
     let collector = NODE_COLLECTOR.lock().unwrap().clone();
-    REGISTRY
-        .register(Box::new(collector))
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to register node metrics collector: {}", e);
-        });
+    REGISTRY.register(Box::new(collector)).unwrap_or_else(|e| {
+        tracing::warn!("Failed to register node metrics collector: {}", e);
+    });
 }
 
 /// Handler for the /metrics endpoint
@@ -191,7 +189,7 @@ pub(crate) async fn metrics_handler() -> impl Responder {
     let collector = NODE_COLLECTOR.lock().unwrap().clone();
     if let Err(e) = collector.update_metrics().await {
         tracing::error!("Failed to update node metrics: {}", e);
-        return HttpResponse::InternalServerError().body(format!("Error updating metrics: {}", e));
+        return HttpResponse::InternalServerError().body(format!("Error updating metrics: {e}"));
     }
 
     // Gather metrics from the registry
@@ -205,7 +203,7 @@ pub(crate) async fn metrics_handler() -> impl Responder {
             .body(buffer),
         Err(e) => {
             tracing::error!("Failed to encode metrics: {}", e);
-            HttpResponse::InternalServerError().body(format!("Error encoding metrics: {}", e))
+            HttpResponse::InternalServerError().body(format!("Error encoding metrics: {e}"))
         }
     }
 }
