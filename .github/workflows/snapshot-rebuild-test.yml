@@ -101,9 +101,23 @@ jobs:
           # Check hugepages
           cat /proc/meminfo | grep Huge
 
-      - name: Build agents binary
+      - name: Build required binaries
         run: |
-          nix-shell --arg devrustup true --run "cargo build --package agents --bin core"
+          nix-shell --arg devrustup true --run "
+            cargo build --bin rest
+            cargo build --package agents --bin core
+            cargo build --bin core-agent
+            cargo build --bin ha-node
+            cargo build --bin ha-cluster
+          "
+
+      - name: Verify binaries exist
+        run: |
+          ls -la target/debug/rest
+          ls -la target/debug/core
+          ls -la target/debug/core-agent
+          ls -la target/debug/ha-node
+          ls -la target/debug/ha-cluster
 
       - name: Run snapshot rebuild integration test
         env:
