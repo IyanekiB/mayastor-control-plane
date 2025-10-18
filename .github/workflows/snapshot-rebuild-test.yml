@@ -105,19 +105,19 @@ jobs:
         run: |
           nix-shell --arg devrustup true --run "
             cargo build --bin rest
-            cargo build --package agents --bin core
-            cargo build --bin core-agent
-            cargo build --bin ha-node
-            cargo build --bin ha-cluster
+            cargo build --bin core
+            cargo build --bin agent-ha-node
+            cargo build --bin agent-ha-cluster
+            cargo build --bin io-engine
           "
 
       - name: Verify binaries exist
         run: |
           ls -la target/debug/rest
           ls -la target/debug/core
-          ls -la target/debug/core-agent
-          ls -la target/debug/ha-node
-          ls -la target/debug/ha-cluster
+          ls -la target/debug/agent-ha-node
+          ls -la target/debug/agent-ha-cluster
+          ls -la target/debug/io-engine
 
       - name: Run snapshot rebuild integration test
         env:
