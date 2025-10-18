@@ -1,0 +1,171 @@
+name: Snapshot Rebuild Integration Test
+
+on:
+  push:
+    branches:
+      - feature/**
+  pull_request:
+    paths:
+      - 'control-plane/agents/**'
+      - '.github/workflows/snapshot-rebuild-test.yml'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TARGET_REGISTRY: openebs
+  CI: 1
+
+jobs:
+  snapshot-rebuild-test:
+    name: Snapshot Rebuild Integration Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get remove -y '^dotnet-.*' || true
+          sudo apt-get remove -y '^llvm-.*' || true
+          sudo apt-get remove -y 'php.*' || true
+          sudo apt-get remove -y azure-cli google-cloud-sdk || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo docker image prune --all --force
+          echo "After cleanup:"
+          df -h
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.3.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix path
+        run: |
+          export NIX_PATH=nixpkgs=$(jq '.nixpkgs.url' nix/sources.json -r)
+          echo "NIX_PATH=$NIX_PATH" >> $GITHUB_ENV
+
+      - name: Pre-populate nix-shell
+        run: nix-shell --arg devrustup true --run "echo 'Nix shell ready'" shell.nix
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: snapshot-rebuild
+
+      - name: Setup Docker
+        run: |
+          # Ensure Docker is running
+          sudo systemctl start docker || true
+          docker version
+          docker info
+
+      - name: Pull required Docker images
+        run: |
+          # Pull io-engine image from OpenEBS
+          docker pull openebs/mayastor-io-engine:develop
+
+          # Pull Jaeger for tracing
+          docker pull jaegertracing/all-in-one:latest
+
+          # Verify images
+          docker images | grep -E "(mayastor|jaeger)"
+
+      - name: Setup Test Prerequisites
+        run: |
+          # Configure hugepages for io-engine (reduced for GitHub runners)
+          sudo sysctl -w vm.nr_hugepages=512
+
+          # Install kernel modules
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r) || true
+
+          # Load nvme_tcp module if available
+          sudo modprobe nvme_tcp || echo "Warning: nvme_tcp module not available"
+
+          # Show loaded modules
+          lsmod | grep nvme || echo "No nvme modules loaded"
+
+          # Check hugepages
+          cat /proc/meminfo | grep Huge
+
+      - name: Build agents binary
+        run: |
+          nix-shell --arg devrustup true --run "cargo build --package agents --bin core"
+
+      - name: Run snapshot rebuild integration test
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: 1
+          TARGET_REGISTRY: openebs
+        run: |
+          nix-shell --arg devrustup true --run "
+            export TARGET_REGISTRY=openebs
+            cargo test --package agents --bin core \
+              controller::io_engine::v1::snap_rebuild::test::snapshot_rebuild \
+              -- --nocapture --test-threads=1
+          "
+        timeout-minutes: 20
+
+      - name: Show Docker container logs on failure
+        if: failure()
+        run: |
+          echo "=== Docker Containers ==="
+          docker ps -a
+
+          echo -e "\n=== Container Logs ==="
+          for container in $(docker ps -aq); do
+            echo -e "\n--- Logs for $container ---"
+            docker logs $container 2>&1 | tail -100 || true
+          done
+
+      - name: Cleanup Docker resources
+        if: always()
+        run: |
+          docker ps -aq | xargs -r docker rm -f || true
+          docker network ls -q | xargs -r docker network rm 2>/dev/null || true
+
+  summary:
+    name: Test Summary
+    needs: snapshot-rebuild-test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [[ "${{ needs.snapshot-rebuild-test.result }}" == "success" ]]; then
+            echo "✅ Snapshot rebuild integration test passed!"
+            echo ""
+            echo "The test successfully:"
+            echo "  - Built the agents binary"
+            echo "  - Pulled openebs/mayastor-io-engine:develop image"
+            echo "  - Started Docker containers for testing"
+            echo "  - Ran snapshot rebuild functionality"
+            echo ""
+            echo "Ready for PR review!"
+            exit 0
+          else
+            echo "❌ Snapshot rebuild integration test failed"
+            echo ""
+            echo "Check the test logs above for details."
+            echo "Common issues:"
+            echo "  - Docker image pull failures"
+            echo "  - Container startup timeouts"
+            echo "  - Resource constraints"
+            echo ""
+            echo "This test requires proper Docker environment and may not"
+            echo "run successfully on VMs or resource-constrained systems."
+            exit 1
+          fi
